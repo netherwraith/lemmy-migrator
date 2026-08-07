@@ -182,7 +182,7 @@ do_export() {
             items=$(jq '.items // []' <<<"$API_RESPONSE")
             next=$(jq -r '.next_page // empty' <<<"$API_RESPONSE")
         else
-            api_request GET "${API_BASE}/community/list?type_=Subscribed&sort=NameAsc&limit=50&page=${page}"
+            api_request GET "${API_BASE}/community/list?type_=Subscribed&limit=50&page=${page}"
             require_success "Fetching communities"
             items=$(jq '.communities // []' <<<"$API_RESPONSE")
             next=''
