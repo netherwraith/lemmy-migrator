@@ -163,3 +163,13 @@ EXPORT_DIR=/path/to/lemmy_export REQUEST_DELAY=1 \
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=netherwraith%2Flemmy-migrator&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=netherwraith/lemmy-migrator&type=date&theme=dark&legend=top-left&sealed_token=T2mPhaoZX87JWLjInLqqe2X45TIu3sqMx-SsycBNgUoFMz_KzRwIyBh7jbVqNWefpD2Pat2FkDchpYOuBQuOfPVaFF912KGrWyRfn7o4mdQTgH7dEwrcJgqef1gMUJ3Gu_kZG2xIIxkkBigkxtMETfgFELg446H65BO4LyD8g8WVEygrXFGYXgBlcGfp" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=netherwraith/lemmy-migrator&type=date&legend=top-left&sealed_token=T2mPhaoZX87JWLjInLqqe2X45TIu3sqMx-SsycBNgUoFMz_KzRwIyBh7jbVqNWefpD2Pat2FkDchpYOuBQuOfPVaFF912KGrWyRfn7o4mdQTgH7dEwrcJgqef1gMUJ3Gu_kZG2xIIxkkBigkxtMETfgFELg446H65BO4LyD8g8WVEygrXFGYXgBlcGfp" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=netherwraith/lemmy-migrator&type=date&legend=top-left&sealed_token=T2mPhaoZX87JWLjInLqqe2X45TIu3sqMx-SsycBNgUoFMz_KzRwIyBh7jbVqNWefpD2Pat2FkDchpYOuBQuOfPVaFF912KGrWyRfn7o4mdQTgH7dEwrcJgqef1gMUJ3Gu_kZG2xIIxkkBigkxtMETfgFELg446H65BO4LyD8g8WVEygrXFGYXgBlcGfp" />
+ </picture>
+</a>
