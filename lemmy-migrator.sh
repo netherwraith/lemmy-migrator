@@ -172,32 +172,56 @@ do_export() {
     echo ""
     echo "Fetching subscribed communities ..."
 
-    local all='[]' page=1 cursor='' items next count
-    while true; do
-        if [[ "$API_VERSION" -eq 4 ]]; then
+    local all='[]' page=1 cursor='' items next count backup_count
+    if [[ "$API_VERSION" -eq 3 ]]; then
+        # Lemmy 0.19 provides the canonical follow URLs directly in its settings
+        # backup. This also works on private instances and has no pagination cap.
+        api_request GET "${API_BASE}/user/export_settings"
+        if [[ "$API_HTTP_CODE" -ge 200 && "$API_HTTP_CODE" -le 299 ]] && \
+            jq -e '.followed_communities | type == "array"' <<<"$API_RESPONSE" >/dev/null 2>&1; then
+            backup_count=$(jq '.followed_communities | length' <<<"$API_RESPONSE")
+            all=$(jq -c --arg source "$source" '
+                [.followed_communities[] as $ap_id
+                 | ($ap_id | capture("^https?://(?<host>[^/]+)/c/(?<name>[^/?#]+)$")?) as $parts
+                 | select($parts != null)
+                 | {community: {
+                     name: $parts.name,
+                     title: $parts.name,
+                     actor_id: $ap_id,
+                     nsfw: false,
+                     local: ($ap_id | startswith($source + "/"))
+                   }}]' <<<"$API_RESPONSE")
+            count=$(jq 'length' <<<"$all")
+            [[ "$count" -eq "$backup_count" ]] || \
+                die "The settings backup contained an invalid community URL."
+        else
+            # Compatibility fallback for Lemmy releases without settings backup.
+            all='[]'
+            while true; do
+                api_request GET "${API_BASE}/community/list?type_=Subscribed&limit=50&page=${page}"
+                require_success "Fetching communities"
+                items=$(jq '.communities // []' <<<"$API_RESPONSE")
+                count=$(jq 'length' <<<"$items")
+                all=$(jq -cn --argjson a "$all" --argjson b "$items" '$a + $b')
+                [[ "$count" -lt 50 ]] && break
+                ((page++))
+            done
+        fi
+    else
+        while true; do
             local url="${API_BASE}/community/list?type_=subscribed&limit=50"
             [[ -n "$cursor" ]] && url+="&page_cursor=$(jq -rn --arg v "$cursor" '$v|@uri')"
             api_request GET "$url"
             require_success "Fetching communities"
             items=$(jq '.items // []' <<<"$API_RESPONSE")
             next=$(jq -r '.next_page // empty' <<<"$API_RESPONSE")
-        else
-            api_request GET "${API_BASE}/community/list?type_=Subscribed&limit=50&page=${page}"
-            require_success "Fetching communities"
-            items=$(jq '.communities // []' <<<"$API_RESPONSE")
-            next=''
-        fi
-        count=$(jq 'length' <<<"$items")
-        all=$(jq -cn --argjson a "$all" --argjson b "$items" '$a + $b')
-        [[ "$count" -eq 0 ]] && break
-        if [[ "$API_VERSION" -eq 4 ]]; then
+            count=$(jq 'length' <<<"$items")
+            all=$(jq -cn --argjson a "$all" --argjson b "$items" '$a + $b')
+            [[ "$count" -eq 0 ]] && break
             [[ -z "$next" ]] && break
             cursor="$next"
-        else
-            [[ "$count" -lt 50 ]] && break
-            ((page++))
-        fi
-    done
+        done
+    fi
 
     local exported_at output
     exported_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
