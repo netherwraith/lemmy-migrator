@@ -2,6 +2,8 @@
 
 A shell script for migrating subscribed communities between [Lemmy](https://join-lemmy.org) instances — no Python, no Node.js, no dependencies beyond `curl` and `jq`.
 
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 This script was initially created for my own purpose and is in no way officially connected to [Lemmy](https://join-lemmy.org), the Lemmy developers or the operators of any instance. Use this script at your own risk!
 
 ## Features
@@ -12,6 +14,7 @@ This script was initially created for my own purpose and is in no way officially
 - Resume support: interrupted imports pick up where they left off
 - Dry-run mode to verify community availability without changing subscriptions
 - Works with password login or an existing Bearer token
+- Retries rate-limited and transient requests with exponential backoff
 - Asks for confirmation before making changes on the target instance
 
 ## Requirements
@@ -134,7 +137,7 @@ Token variants are available as `--source-token` and `--target-token`; usernames
 
 ## Resume After Interruption
 
-Every successfully subscribed community is tracked in `lemmy_export/.imported_communities`. If the import is interrupted, simply re-run the same command. Already imported communities are automatically skipped.
+Every successfully subscribed community is tracked in a target-specific file below `lemmy_export/.imported_communities/`. If the import is interrupted, simply re-run the same command against the same target. Already imported communities are automatically skipped, while an import to a different target starts with its own state.
 
 ```text
 [1/42] Resolving !technology@lemmy.world ... ✓ subscribed
@@ -142,16 +145,21 @@ Every successfully subscribed community is tracked in `lemmy_export/.imported_co
 [3/42] Resolving !example@offline.example ... ✗ not found
 ```
 
-To deliberately start over, remove the resume file. Following a community more than once does not create duplicate subscriptions, but the additional requests may trigger rate limits.
+To deliberately start over, remove the resume file for that target. Following a community more than once does not create duplicate subscriptions, but the additional requests may trigger rate limits. Resume files from versions before v0.1 are intentionally ignored because they were not associated with a target instance.
 
 ## Customisation
 
-Use a custom export directory or increase the delay between API calls:
+Use a custom export directory, increase the delay between API calls, or tune transient-request retries:
 
 ```bash
 EXPORT_DIR=/path/to/lemmy_export REQUEST_DELAY=1 \
   ./lemmy-migrator.sh import --target https://new-instance.example --token 'eyJ...'
+
+MAX_RETRIES=5 RETRY_BASE_DELAY=2 \
+  ./lemmy-migrator.sh import --target https://new-instance.example --token 'eyJ...'
 ```
+
+`MAX_RETRIES` is the number of retries after the initial request (default: `3`). `RETRY_BASE_DELAY` controls the initial exponential-backoff delay in seconds (default: `1`). A numeric `Retry-After` header takes precedence for HTTP 429 responses.
 
 ## Known Limitations
 
@@ -159,6 +167,14 @@ EXPORT_DIR=/path/to/lemmy_export REQUEST_DELAY=1 \
 - A remote instance that is offline can prevent a community from being resolved during import. Re-running the import later will retry failed entries.
 - Pending subscriptions to private or manually approving communities may still require approval by their moderators.
 - Two-factor login is not performed by the script; use an existing token instead.
+
+## Tests
+
+Run the dependency-free regression suite with:
+
+```bash
+./tests/test.sh
+```
 
 ## License
 

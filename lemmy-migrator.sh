@@ -17,13 +17,15 @@ if [[ "$EXPORT_DIR" != /* ]]; then
 fi
 
 REQUEST_DELAY="${REQUEST_DELAY:-0.5}"
+MAX_RETRIES="${MAX_RETRIES:-3}"
+RETRY_BASE_DELAY="${RETRY_BASE_DELAY:-1}"
 DEBUG=0
 DRY_RUN=0
 ASSUME_YES=0
 API_VERSION=""
 API_BASE=""
 API_TOKEN=""
-RESUME_FILE="${EXPORT_DIR}/.imported_communities"
+RESUME_FILE=""
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -83,22 +85,42 @@ curl_args() {
 }
 
 api_request() {
-    local method="$1" url="$2" data="${3:-}" tmp http_code
-    tmp=$(mktemp)
-    curl_args
-    local args=("${CURL_ARGS[@]}" -o "$tmp" -w '%{http_code}' -X "$method" \
-        -H 'Accept: application/json')
-    [[ -n "$API_TOKEN" ]] && args+=(-H "Authorization: Bearer ${API_TOKEN}")
-    [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' -d "$data")
-    [[ "$DEBUG" -eq 1 ]] && echo "  → ${method} ${url}" >&2
-    rdelay
-    http_code=$(curl "${args[@]}" "$url") || {
-        local rc=$?; rm -f "$tmp"; die "Request failed: ${method} ${url} (curl ${rc})"
-    }
-    API_RESPONSE=$(<"$tmp")
-    rm -f "$tmp"
-    API_HTTP_CODE="$http_code"
-    [[ "$DEBUG" -eq 1 ]] && echo "  ← HTTP ${http_code}" >&2
+    local method="$1" url="$2" data="${3:-}" tmp headers http_code rc
+    local attempt=0 retry_delay retry_after
+    while true; do
+        tmp=$(mktemp)
+        headers=$(mktemp)
+        curl_args
+        local args=("${CURL_ARGS[@]}" -D "$headers" -o "$tmp" -w '%{http_code}' -X "$method" \
+            -H 'Accept: application/json')
+        [[ -n "$API_TOKEN" ]] && args+=(-H "Authorization: Bearer ${API_TOKEN}")
+        [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' -d "$data")
+        [[ "$DEBUG" -eq 1 ]] && echo "  → ${method} ${url}" >&2
+        rdelay
+        rc=0
+        http_code=$(curl "${args[@]}" "$url") || rc=$?
+        API_RESPONSE=$(<"$tmp")
+        API_HTTP_CODE="${http_code:-000}"
+        retry_after=$(tr -d '\r' <"$headers" | sed -n 's/^[Rr]etry-[Aa]fter:[[:space:]]*//p' | tail -n 1)
+        rm -f "$tmp" "$headers"
+        [[ "$DEBUG" -eq 1 ]] && echo "  ← HTTP ${API_HTTP_CODE}" >&2
+
+        if [[ "$rc" -eq 0 && "$API_HTTP_CODE" != 429 && ! "$API_HTTP_CODE" =~ ^5[0-9][0-9]$ ]]; then
+            return
+        fi
+        if [[ "$attempt" -ge "$MAX_RETRIES" ]]; then
+            [[ "$rc" -eq 0 ]] && return
+            die "Request failed after $((MAX_RETRIES + 1)) attempts: ${method} ${url} (curl ${rc})"
+        fi
+
+        retry_delay=$((RETRY_BASE_DELAY * (2 ** attempt)))
+        if [[ "$API_HTTP_CODE" == 429 && "$retry_after" =~ ^[0-9]+$ ]]; then
+            retry_delay="$retry_after"
+        fi
+        ((attempt++))
+        echo "  Retrying ${method} ${url} in ${retry_delay}s (attempt $((attempt + 1))/$((MAX_RETRIES + 1))) ..." >&2
+        sleep "$retry_delay"
+    done
 }
 
 require_success() {
@@ -159,6 +181,26 @@ community_handle() {
     printf '!%s@%s' "$name" "$host"
 }
 
+resume_file_for() {
+    local target="$1" target_key
+    target_key=$(jq -rn --arg target "$target" '$target | @uri')
+    printf '%s/.imported_communities/%s' "$EXPORT_DIR" "$target_key"
+}
+
+require_option_value() {
+    [[ $# -ge 2 ]] || die "${1} requires a non-empty value."
+    [[ -n "$2" && "$2" != --* ]] || die "${1} requires a non-empty value."
+}
+
+validate_runtime_options() {
+    [[ "$REQUEST_DELAY" =~ ^[0-9]+([.][0-9]+)?$ ]] || \
+        die "REQUEST_DELAY must be a non-negative number."
+    [[ "$MAX_RETRIES" =~ ^[0-9]+$ ]] || \
+        die "MAX_RETRIES must be a non-negative integer."
+    [[ "$RETRY_BASE_DELAY" =~ ^[0-9]+$ ]] || \
+        die "RETRY_BASE_DELAY must be a non-negative integer."
+}
+
 # ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
@@ -172,7 +214,7 @@ do_export() {
     echo ""
     echo "Fetching subscribed communities ..."
 
-    local all='[]' page=1 cursor='' items next count backup_count
+    local all='[]' page=1 cursor='' seen_cursors='' items next count backup_count
     if [[ "$API_VERSION" -eq 3 ]]; then
         # Lemmy 0.19 provides the canonical follow URLs directly in its settings
         # backup. This also works on private instances and has no pagination cap.
@@ -200,7 +242,9 @@ do_export() {
             while true; do
                 api_request GET "${API_BASE}/community/list?type_=Subscribed&limit=50&page=${page}"
                 require_success "Fetching communities"
-                items=$(jq '.communities // []' <<<"$API_RESPONSE")
+                jq -e '.communities | type == "array"' <<<"$API_RESPONSE" >/dev/null 2>&1 || \
+                    die "Fetching communities returned an incomplete pagination response."
+                items=$(jq '.communities' <<<"$API_RESPONSE")
                 count=$(jq 'length' <<<"$items")
                 all=$(jq -cn --argjson a "$all" --argjson b "$items" '$a + $b')
                 [[ "$count" -lt 50 ]] && break
@@ -213,12 +257,18 @@ do_export() {
             [[ -n "$cursor" ]] && url+="&page_cursor=$(jq -rn --arg v "$cursor" '$v|@uri')"
             api_request GET "$url"
             require_success "Fetching communities"
-            items=$(jq '.items // []' <<<"$API_RESPONSE")
+            jq -e '(.items | type == "array") and has("next_page")' <<<"$API_RESPONSE" >/dev/null 2>&1 || \
+                die "Fetching communities returned an incomplete pagination response."
+            items=$(jq '.items' <<<"$API_RESPONSE")
             next=$(jq -r '.next_page // empty' <<<"$API_RESPONSE")
             count=$(jq 'length' <<<"$items")
             all=$(jq -cn --argjson a "$all" --argjson b "$items" '$a + $b')
             [[ "$count" -eq 0 ]] && break
             [[ -z "$next" ]] && break
+            if grep -qxF "$next" <<<"$seen_cursors"; then
+                die "Fetching communities returned a repeated page cursor."
+            fi
+            seen_cursors+="${next}"$'\n'
             cursor="$next"
         done
     fi
@@ -272,6 +322,7 @@ do_import() {
     echo "=== Lemmy subscription import ==="
     echo ""
     login "$target" "$username" "$password" "$token"
+    RESUME_FILE=$(resume_file_for "$target")
     local total
     total=$(jq '.communities | length' "$file")
     echo ""
@@ -283,7 +334,7 @@ do_import() {
         [[ "$answer" =~ ^[Yy]$ ]] || { echo "Import cancelled."; return; }
     fi
 
-    mkdir -p "$EXPORT_DIR"
+    mkdir -p "$(dirname "$RESUME_FILE")"
     touch "$RESUME_FILE"
     local index=0 imported=0 skipped=0 failed=0 item ap_id handle payload
     while IFS= read -r item; do
@@ -324,50 +375,64 @@ do_import() {
 # CLI
 # ---------------------------------------------------------------------------
 
-COMMAND="${1:-}"
-[[ -n "$COMMAND" ]] || { usage; exit 1; }
-case "$COMMAND" in export|import|full) shift ;; -h|--help) usage; exit 0 ;; *) usage; exit 1 ;; esac
+main() {
+    local command="${1:-}"
+    [[ -n "$command" ]] || { usage; return 1; }
+    case "$command" in export|import|full) shift ;; -h|--help) usage; return 0 ;; *) usage; return 1 ;; esac
 
-SOURCE='' TARGET='' USERNAME='' PASSWORD='' TOKEN=''
-SOURCE_USER='' SOURCE_PASSWORD="${SOURCE_PASSWORD:-}" SOURCE_TOKEN="${SOURCE_TOKEN:-}"
-TARGET_USER='' TARGET_PASSWORD="${TARGET_PASSWORD:-}" TARGET_TOKEN="${TARGET_TOKEN:-}"
+    local source='' target='' username='' password='' token=''
+    local source_user='' source_password="${SOURCE_PASSWORD:-}" source_token="${SOURCE_TOKEN:-}"
+    local target_user='' target_password="${TARGET_PASSWORD:-}" target_token="${TARGET_TOKEN:-}"
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --source) SOURCE="${2:-}"; shift 2 ;; --target) TARGET="${2:-}"; shift 2 ;;
-        --user) USERNAME="${2:-}"; shift 2 ;; --password) PASSWORD="${2:-}"; shift 2 ;;
-        --token) TOKEN="${2:-}"; shift 2 ;;
-        --source-user) SOURCE_USER="${2:-}"; shift 2 ;;
-        --source-password) SOURCE_PASSWORD="${2:-}"; shift 2 ;;
-        --source-token) SOURCE_TOKEN="${2:-}"; shift 2 ;;
-        --target-user) TARGET_USER="${2:-}"; shift 2 ;;
-        --target-password) TARGET_PASSWORD="${2:-}"; shift 2 ;;
-        --target-token) TARGET_TOKEN="${2:-}"; shift 2 ;;
-        --export-dir) EXPORT_DIR="${2:-}"; [[ "$EXPORT_DIR" != /* ]] && EXPORT_DIR="$(pwd)/$EXPORT_DIR"; RESUME_FILE="${EXPORT_DIR}/.imported_communities"; shift 2 ;;
-        --dry-run) DRY_RUN=1; shift ;; --yes) ASSUME_YES=1; shift ;;
-        --debug) DEBUG=1; shift ;; -h|--help) usage; exit 0 ;;
-        *) die "Unknown option: $1" ;;
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --source) require_option_value "$@"; source="$2"; shift 2 ;;
+            --target) require_option_value "$@"; target="$2"; shift 2 ;;
+            --user) require_option_value "$@"; username="$2"; shift 2 ;;
+            --password) require_option_value "$@"; password="$2"; shift 2 ;;
+            --token) require_option_value "$@"; token="$2"; shift 2 ;;
+            --source-user) require_option_value "$@"; source_user="$2"; shift 2 ;;
+            --source-password) require_option_value "$@"; source_password="$2"; shift 2 ;;
+            --source-token) require_option_value "$@"; source_token="$2"; shift 2 ;;
+            --target-user) require_option_value "$@"; target_user="$2"; shift 2 ;;
+            --target-password) require_option_value "$@"; target_password="$2"; shift 2 ;;
+            --target-token) require_option_value "$@"; target_token="$2"; shift 2 ;;
+            --export-dir)
+                require_option_value "$@"
+                EXPORT_DIR="$2"
+                [[ "$EXPORT_DIR" != /* ]] && EXPORT_DIR="$(pwd)/$EXPORT_DIR"
+                shift 2
+                ;;
+            --dry-run) DRY_RUN=1; shift ;; --yes) ASSUME_YES=1; shift ;;
+            --debug) DEBUG=1; shift ;; -h|--help) usage; return 0 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+
+    validate_runtime_options
+    check_deps
+    case "$command" in
+        export)
+            [[ -n "$source" ]] || die "--source is required."
+            do_export "$(normalise_url "$source")" "$username" "${password:-${source_password:-}}" "${token:-${source_token:-}}"
+            ;;
+        import)
+            [[ -n "$target" ]] || die "--target is required."
+            do_import "$(normalise_url "$target")" "$username" "${password:-${target_password:-}}" "${token:-${target_token:-}}"
+            ;;
+        full)
+            [[ -n "$source" && -n "$target" ]] || die "--source and --target are required."
+            [[ -n "$source_token" || ( -n "$source_user" && -n "$source_password" ) ]] || \
+                die "Provide --source-token or source username and password."
+            [[ -n "$target_token" || ( -n "$target_user" && -n "$target_password" ) ]] || \
+                die "Provide --target-token or target username and password."
+            do_export "$(normalise_url "$source")" "$source_user" "$source_password" "$source_token"
+            API_TOKEN=''; API_VERSION=''; API_BASE=''
+            do_import "$(normalise_url "$target")" "$target_user" "$target_password" "$target_token"
+            ;;
     esac
-done
+}
 
-check_deps
-case "$COMMAND" in
-    export)
-        [[ -n "$SOURCE" ]] || die "--source is required."
-        do_export "$(normalise_url "$SOURCE")" "$USERNAME" "${PASSWORD:-${SOURCE_PASSWORD:-}}" "${TOKEN:-${SOURCE_TOKEN:-}}"
-        ;;
-    import)
-        [[ -n "$TARGET" ]] || die "--target is required."
-        do_import "$(normalise_url "$TARGET")" "$USERNAME" "${PASSWORD:-${TARGET_PASSWORD:-}}" "${TOKEN:-${TARGET_TOKEN:-}}"
-        ;;
-    full)
-        [[ -n "$SOURCE" && -n "$TARGET" ]] || die "--source and --target are required."
-        [[ -n "$SOURCE_TOKEN" || ( -n "$SOURCE_USER" && -n "$SOURCE_PASSWORD" ) ]] || \
-            die "Provide --source-token or source username and password."
-        [[ -n "$TARGET_TOKEN" || ( -n "$TARGET_USER" && -n "$TARGET_PASSWORD" ) ]] || \
-            die "Provide --target-token or target username and password."
-        do_export "$(normalise_url "$SOURCE")" "$SOURCE_USER" "$SOURCE_PASSWORD" "$SOURCE_TOKEN"
-        API_TOKEN=''; API_VERSION=''; API_BASE=''
-        do_import "$(normalise_url "$TARGET")" "$TARGET_USER" "$TARGET_PASSWORD" "$TARGET_TOKEN"
-        ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
