@@ -2,6 +2,8 @@
 
 A shell script for migrating subscribed communities between [Lemmy](https://join-lemmy.org) instances — no Python, no Node.js, no dependencies beyond `curl` and `jq`.
 
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 This script was initially created for my own purpose and is in no way officially connected to [Lemmy](https://join-lemmy.org), the Lemmy developers or the operators of any instance. Use this script at your own risk!
 
 ## Features
