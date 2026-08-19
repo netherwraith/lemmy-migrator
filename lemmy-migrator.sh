@@ -178,7 +178,7 @@ do_export() {
     echo ""
     echo "Fetching subscribed communities ..."
 
-    local all='[]' page=1 cursor='' items next count backup_count
+    local all='[]' page=1 cursor='' seen_cursors='' items next count backup_count
     if [[ "$API_VERSION" -eq 3 ]]; then
         # Lemmy 0.19 provides the canonical follow URLs directly in its settings
         # backup. This also works on private instances and has no pagination cap.
@@ -206,7 +206,9 @@ do_export() {
             while true; do
                 api_request GET "${API_BASE}/community/list?type_=Subscribed&limit=50&page=${page}"
                 require_success "Fetching communities"
-                items=$(jq '.communities // []' <<<"$API_RESPONSE")
+                jq -e '.communities | type == "array"' <<<"$API_RESPONSE" >/dev/null 2>&1 || \
+                    die "Fetching communities returned an incomplete pagination response."
+                items=$(jq '.communities' <<<"$API_RESPONSE")
                 count=$(jq 'length' <<<"$items")
                 all=$(jq -cn --argjson a "$all" --argjson b "$items" '$a + $b')
                 [[ "$count" -lt 50 ]] && break
@@ -219,12 +221,18 @@ do_export() {
             [[ -n "$cursor" ]] && url+="&page_cursor=$(jq -rn --arg v "$cursor" '$v|@uri')"
             api_request GET "$url"
             require_success "Fetching communities"
-            items=$(jq '.items // []' <<<"$API_RESPONSE")
+            jq -e '(.items | type == "array") and has("next_page")' <<<"$API_RESPONSE" >/dev/null 2>&1 || \
+                die "Fetching communities returned an incomplete pagination response."
+            items=$(jq '.items' <<<"$API_RESPONSE")
             next=$(jq -r '.next_page // empty' <<<"$API_RESPONSE")
             count=$(jq 'length' <<<"$items")
             all=$(jq -cn --argjson a "$all" --argjson b "$items" '$a + $b')
             [[ "$count" -eq 0 ]] && break
             [[ -z "$next" ]] && break
+            if grep -qxF "$next" <<<"$seen_cursors"; then
+                die "Fetching communities returned a repeated page cursor."
+            fi
+            seen_cursors+="${next}"$'\n'
             cursor="$next"
         done
     fi
