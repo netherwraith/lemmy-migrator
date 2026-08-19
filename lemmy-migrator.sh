@@ -187,6 +187,20 @@ resume_file_for() {
     printf '%s/.imported_communities/%s' "$EXPORT_DIR" "$target_key"
 }
 
+require_option_value() {
+    [[ $# -ge 2 ]] || die "${1} requires a non-empty value."
+    [[ -n "$2" && "$2" != --* ]] || die "${1} requires a non-empty value."
+}
+
+validate_runtime_options() {
+    [[ "$REQUEST_DELAY" =~ ^[0-9]+([.][0-9]+)?$ ]] || \
+        die "REQUEST_DELAY must be a non-negative number."
+    [[ "$MAX_RETRIES" =~ ^[0-9]+$ ]] || \
+        die "MAX_RETRIES must be a non-negative integer."
+    [[ "$RETRY_BASE_DELAY" =~ ^[0-9]+$ ]] || \
+        die "RETRY_BASE_DELAY must be a non-negative integer."
+}
+
 # ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
@@ -361,50 +375,64 @@ do_import() {
 # CLI
 # ---------------------------------------------------------------------------
 
-COMMAND="${1:-}"
-[[ -n "$COMMAND" ]] || { usage; exit 1; }
-case "$COMMAND" in export|import|full) shift ;; -h|--help) usage; exit 0 ;; *) usage; exit 1 ;; esac
+main() {
+    local command="${1:-}"
+    [[ -n "$command" ]] || { usage; return 1; }
+    case "$command" in export|import|full) shift ;; -h|--help) usage; return 0 ;; *) usage; return 1 ;; esac
 
-SOURCE='' TARGET='' USERNAME='' PASSWORD='' TOKEN=''
-SOURCE_USER='' SOURCE_PASSWORD="${SOURCE_PASSWORD:-}" SOURCE_TOKEN="${SOURCE_TOKEN:-}"
-TARGET_USER='' TARGET_PASSWORD="${TARGET_PASSWORD:-}" TARGET_TOKEN="${TARGET_TOKEN:-}"
+    local source='' target='' username='' password='' token=''
+    local source_user='' source_password="${SOURCE_PASSWORD:-}" source_token="${SOURCE_TOKEN:-}"
+    local target_user='' target_password="${TARGET_PASSWORD:-}" target_token="${TARGET_TOKEN:-}"
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --source) SOURCE="${2:-}"; shift 2 ;; --target) TARGET="${2:-}"; shift 2 ;;
-        --user) USERNAME="${2:-}"; shift 2 ;; --password) PASSWORD="${2:-}"; shift 2 ;;
-        --token) TOKEN="${2:-}"; shift 2 ;;
-        --source-user) SOURCE_USER="${2:-}"; shift 2 ;;
-        --source-password) SOURCE_PASSWORD="${2:-}"; shift 2 ;;
-        --source-token) SOURCE_TOKEN="${2:-}"; shift 2 ;;
-        --target-user) TARGET_USER="${2:-}"; shift 2 ;;
-        --target-password) TARGET_PASSWORD="${2:-}"; shift 2 ;;
-        --target-token) TARGET_TOKEN="${2:-}"; shift 2 ;;
-        --export-dir) EXPORT_DIR="${2:-}"; [[ "$EXPORT_DIR" != /* ]] && EXPORT_DIR="$(pwd)/$EXPORT_DIR"; RESUME_FILE="${EXPORT_DIR}/.imported_communities"; shift 2 ;;
-        --dry-run) DRY_RUN=1; shift ;; --yes) ASSUME_YES=1; shift ;;
-        --debug) DEBUG=1; shift ;; -h|--help) usage; exit 0 ;;
-        *) die "Unknown option: $1" ;;
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --source) require_option_value "$@"; source="$2"; shift 2 ;;
+            --target) require_option_value "$@"; target="$2"; shift 2 ;;
+            --user) require_option_value "$@"; username="$2"; shift 2 ;;
+            --password) require_option_value "$@"; password="$2"; shift 2 ;;
+            --token) require_option_value "$@"; token="$2"; shift 2 ;;
+            --source-user) require_option_value "$@"; source_user="$2"; shift 2 ;;
+            --source-password) require_option_value "$@"; source_password="$2"; shift 2 ;;
+            --source-token) require_option_value "$@"; source_token="$2"; shift 2 ;;
+            --target-user) require_option_value "$@"; target_user="$2"; shift 2 ;;
+            --target-password) require_option_value "$@"; target_password="$2"; shift 2 ;;
+            --target-token) require_option_value "$@"; target_token="$2"; shift 2 ;;
+            --export-dir)
+                require_option_value "$@"
+                EXPORT_DIR="$2"
+                [[ "$EXPORT_DIR" != /* ]] && EXPORT_DIR="$(pwd)/$EXPORT_DIR"
+                shift 2
+                ;;
+            --dry-run) DRY_RUN=1; shift ;; --yes) ASSUME_YES=1; shift ;;
+            --debug) DEBUG=1; shift ;; -h|--help) usage; return 0 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+
+    validate_runtime_options
+    check_deps
+    case "$command" in
+        export)
+            [[ -n "$source" ]] || die "--source is required."
+            do_export "$(normalise_url "$source")" "$username" "${password:-${source_password:-}}" "${token:-${source_token:-}}"
+            ;;
+        import)
+            [[ -n "$target" ]] || die "--target is required."
+            do_import "$(normalise_url "$target")" "$username" "${password:-${target_password:-}}" "${token:-${target_token:-}}"
+            ;;
+        full)
+            [[ -n "$source" && -n "$target" ]] || die "--source and --target are required."
+            [[ -n "$source_token" || ( -n "$source_user" && -n "$source_password" ) ]] || \
+                die "Provide --source-token or source username and password."
+            [[ -n "$target_token" || ( -n "$target_user" && -n "$target_password" ) ]] || \
+                die "Provide --target-token or target username and password."
+            do_export "$(normalise_url "$source")" "$source_user" "$source_password" "$source_token"
+            API_TOKEN=''; API_VERSION=''; API_BASE=''
+            do_import "$(normalise_url "$target")" "$target_user" "$target_password" "$target_token"
+            ;;
     esac
-done
+}
 
-check_deps
-case "$COMMAND" in
-    export)
-        [[ -n "$SOURCE" ]] || die "--source is required."
-        do_export "$(normalise_url "$SOURCE")" "$USERNAME" "${PASSWORD:-${SOURCE_PASSWORD:-}}" "${TOKEN:-${SOURCE_TOKEN:-}}"
-        ;;
-    import)
-        [[ -n "$TARGET" ]] || die "--target is required."
-        do_import "$(normalise_url "$TARGET")" "$USERNAME" "${PASSWORD:-${TARGET_PASSWORD:-}}" "${TOKEN:-${TARGET_TOKEN:-}}"
-        ;;
-    full)
-        [[ -n "$SOURCE" && -n "$TARGET" ]] || die "--source and --target are required."
-        [[ -n "$SOURCE_TOKEN" || ( -n "$SOURCE_USER" && -n "$SOURCE_PASSWORD" ) ]] || \
-            die "Provide --source-token or source username and password."
-        [[ -n "$TARGET_TOKEN" || ( -n "$TARGET_USER" && -n "$TARGET_PASSWORD" ) ]] || \
-            die "Provide --target-token or target username and password."
-        do_export "$(normalise_url "$SOURCE")" "$SOURCE_USER" "$SOURCE_PASSWORD" "$SOURCE_TOKEN"
-        API_TOKEN=''; API_VERSION=''; API_BASE=''
-        do_import "$(normalise_url "$TARGET")" "$TARGET_USER" "$TARGET_PASSWORD" "$TARGET_TOKEN"
-        ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

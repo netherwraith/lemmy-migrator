@@ -166,6 +166,14 @@ MAX_RETRIES=5 RETRY_BASE_DELAY=2 \
 - Pending subscriptions to private or manually approving communities may still require approval by their moderators.
 - Two-factor login is not performed by the script; use an existing token instead.
 
+## Tests
+
+Run the dependency-free regression suite with:
+
+```bash
+./tests/test.sh
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
