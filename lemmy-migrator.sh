@@ -275,7 +275,9 @@ do_export() {
             [[ -n "$cursor" ]] && url+="&page_cursor=$(jq -rn --arg v "$cursor" '$v|@uri')"
             api_request GET "$url"
             require_success "Fetching communities"
-            jq -e '(.items | type == "array") and has("next_page")' <<<"$API_RESPONSE" >/dev/null 2>&1 || \
+            jq -e '(.items | type == "array") and has("next_page") and
+                ((.next_page == null) or (.next_page | type == "string"))' \
+                <<<"$API_RESPONSE" >/dev/null 2>&1 || \
                 die "Fetching communities returned an incomplete pagination response."
             items=$(jq '.items' <<<"$API_RESPONSE")
             next=$(jq -r '.next_page // empty' <<<"$API_RESPONSE")
@@ -291,7 +293,7 @@ do_export() {
         done
     fi
 
-    local exported_at output
+    local exported_at output output_file output_tmp
     exported_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
     output=$(jq -cn --arg format 'lemmy-migrator' --argjson version 1 \
         --arg exported_at "$exported_at" --arg source "$source" --argjson api "$API_VERSION" \
@@ -303,9 +305,14 @@ do_export() {
          }] | sort_by(.ap_id)}')
     jq -e '.communities | all(.name and .ap_id)' <<<"$output" >/dev/null || \
         die "The instance returned incomplete community data."
-    printf '%s\n' "$output" >"${EXPORT_DIR}/communities.json"
+    output_file="${EXPORT_DIR}/communities.json"
+    output_tmp=$(mktemp "${output_file}.XXXXXX")
+    if ! printf '%s\n' "$output" >"$output_tmp" || ! mv "$output_tmp" "$output_file"; then
+        rm -f "$output_tmp"
+        die "Could not write export atomically: ${output_file}"
+    fi
     count=$(jq '.communities | length' <<<"$output")
-    echo "  ✓ ${count} subscriptions saved to ${EXPORT_DIR}/communities.json"
+    echo "  ✓ ${count} subscriptions saved to ${output_file}"
 }
 
 # ---------------------------------------------------------------------------
