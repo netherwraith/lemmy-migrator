@@ -23,7 +23,7 @@ ASSUME_YES=0
 API_VERSION=""
 API_BASE=""
 API_TOKEN=""
-RESUME_FILE="${EXPORT_DIR}/.imported_communities"
+RESUME_FILE=""
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -159,6 +159,12 @@ community_handle() {
     printf '!%s@%s' "$name" "$host"
 }
 
+resume_file_for() {
+    local target="$1" target_key
+    target_key=$(jq -rn --arg target "$target" '$target | @uri')
+    printf '%s/.imported_communities/%s' "$EXPORT_DIR" "$target_key"
+}
+
 # ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
@@ -272,6 +278,7 @@ do_import() {
     echo "=== Lemmy subscription import ==="
     echo ""
     login "$target" "$username" "$password" "$token"
+    RESUME_FILE=$(resume_file_for "$target")
     local total
     total=$(jq '.communities | length' "$file")
     echo ""
@@ -283,7 +290,7 @@ do_import() {
         [[ "$answer" =~ ^[Yy]$ ]] || { echo "Import cancelled."; return; }
     fi
 
-    mkdir -p "$EXPORT_DIR"
+    mkdir -p "$(dirname "$RESUME_FILE")"
     touch "$RESUME_FILE"
     local index=0 imported=0 skipped=0 failed=0 item ap_id handle payload
     while IFS= read -r item; do
