@@ -83,8 +83,8 @@ test_repeated_v4_cursor_is_rejected() {
     [[ "$output" == *'repeated page cursor'* ]]
 }
 
-test_rate_limit_is_retried() {
-    local counter_file="${TEST_TMP}/retry-count"
+test_status_is_retried() {
+    local initial_status="$1" counter_file="${TEST_TMP}/retry-count-${1}"
     printf '0\n' >"$counter_file"
     REQUEST_DELAY=0
     MAX_RETRIES=2
@@ -101,9 +101,9 @@ test_rate_limit_is_retried() {
         count=$((count + 1))
         printf '%s\n' "$count" >"$counter_file"
         if [[ "$count" -eq 1 ]]; then
-            printf 'Retry-After: 0\r\n' >"$header_file"
-            printf '{"error":"rate_limited"}' >"$output_file"
-            printf '429'
+            [[ "$initial_status" -eq 429 ]] && printf 'Retry-After: 0\r\n' >"$header_file" || : >"$header_file"
+            printf '{"error":"transient"}' >"$output_file"
+            printf '%s' "$initial_status"
         else
             : >"$header_file"
             printf '{"ok":true}' >"$output_file"
@@ -113,6 +113,9 @@ test_rate_limit_is_retried() {
     api_request GET 'https://target.example/api/v4/site' >/dev/null 2>&1
     [[ "$(<"$counter_file")" -eq 2 && "$API_HTTP_CODE" -eq 200 && "$API_RESPONSE" == '{"ok":true}' ]]
 }
+
+test_rate_limit_is_retried() { test_status_is_retried 429; }
+test_server_error_is_retried() { test_status_is_retried 503; }
 
 test_missing_option_value_is_rejected() {
     local output
@@ -144,6 +147,7 @@ run_test 'dry runs do not create resume state' test_dry_run_does_not_create_resu
 run_test 'incomplete API v4 pages are rejected' test_incomplete_v4_page_is_rejected
 run_test 'repeated API v4 cursors are rejected' test_repeated_v4_cursor_is_rejected
 run_test 'HTTP 429 responses are retried' test_rate_limit_is_retried
+run_test 'HTTP 503 responses are retried' test_server_error_is_retried
 run_test 'missing option values are rejected' test_missing_option_value_is_rejected
 run_test 'empty option values are rejected' test_empty_option_value_is_rejected
 run_test 'another option is not consumed as a value' test_next_option_is_not_consumed_as_value
