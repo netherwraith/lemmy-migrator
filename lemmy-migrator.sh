@@ -17,6 +17,8 @@ if [[ "$EXPORT_DIR" != /* ]]; then
 fi
 
 REQUEST_DELAY="${REQUEST_DELAY:-0.5}"
+MAX_RETRIES="${MAX_RETRIES:-3}"
+RETRY_BASE_DELAY="${RETRY_BASE_DELAY:-1}"
 DEBUG=0
 DRY_RUN=0
 ASSUME_YES=0
@@ -83,22 +85,42 @@ curl_args() {
 }
 
 api_request() {
-    local method="$1" url="$2" data="${3:-}" tmp http_code
-    tmp=$(mktemp)
-    curl_args
-    local args=("${CURL_ARGS[@]}" -o "$tmp" -w '%{http_code}' -X "$method" \
-        -H 'Accept: application/json')
-    [[ -n "$API_TOKEN" ]] && args+=(-H "Authorization: Bearer ${API_TOKEN}")
-    [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' -d "$data")
-    [[ "$DEBUG" -eq 1 ]] && echo "  → ${method} ${url}" >&2
-    rdelay
-    http_code=$(curl "${args[@]}" "$url") || {
-        local rc=$?; rm -f "$tmp"; die "Request failed: ${method} ${url} (curl ${rc})"
-    }
-    API_RESPONSE=$(<"$tmp")
-    rm -f "$tmp"
-    API_HTTP_CODE="$http_code"
-    [[ "$DEBUG" -eq 1 ]] && echo "  ← HTTP ${http_code}" >&2
+    local method="$1" url="$2" data="${3:-}" tmp headers http_code rc
+    local attempt=0 retry_delay retry_after
+    while true; do
+        tmp=$(mktemp)
+        headers=$(mktemp)
+        curl_args
+        local args=("${CURL_ARGS[@]}" -D "$headers" -o "$tmp" -w '%{http_code}' -X "$method" \
+            -H 'Accept: application/json')
+        [[ -n "$API_TOKEN" ]] && args+=(-H "Authorization: Bearer ${API_TOKEN}")
+        [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' -d "$data")
+        [[ "$DEBUG" -eq 1 ]] && echo "  → ${method} ${url}" >&2
+        rdelay
+        rc=0
+        http_code=$(curl "${args[@]}" "$url") || rc=$?
+        API_RESPONSE=$(<"$tmp")
+        API_HTTP_CODE="${http_code:-000}"
+        retry_after=$(tr -d '\r' <"$headers" | sed -n 's/^[Rr]etry-[Aa]fter:[[:space:]]*//p' | tail -n 1)
+        rm -f "$tmp" "$headers"
+        [[ "$DEBUG" -eq 1 ]] && echo "  ← HTTP ${API_HTTP_CODE}" >&2
+
+        if [[ "$rc" -eq 0 && "$API_HTTP_CODE" != 429 && ! "$API_HTTP_CODE" =~ ^5[0-9][0-9]$ ]]; then
+            return
+        fi
+        if [[ "$attempt" -ge "$MAX_RETRIES" ]]; then
+            [[ "$rc" -eq 0 ]] && return
+            die "Request failed after $((MAX_RETRIES + 1)) attempts: ${method} ${url} (curl ${rc})"
+        fi
+
+        retry_delay=$((RETRY_BASE_DELAY * (2 ** attempt)))
+        if [[ "$API_HTTP_CODE" == 429 && "$retry_after" =~ ^[0-9]+$ ]]; then
+            retry_delay="$retry_after"
+        fi
+        ((attempt++))
+        echo "  Retrying ${method} ${url} in ${retry_delay}s (attempt $((attempt + 1))/$((MAX_RETRIES + 1))) ..." >&2
+        sleep "$retry_delay"
+    done
 }
 
 require_success() {

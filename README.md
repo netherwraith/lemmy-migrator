@@ -12,6 +12,7 @@ This script was initially created for my own purpose and is in no way officially
 - Resume support: interrupted imports pick up where they left off
 - Dry-run mode to verify community availability without changing subscriptions
 - Works with password login or an existing Bearer token
+- Retries rate-limited and transient requests with exponential backoff
 - Asks for confirmation before making changes on the target instance
 
 ## Requirements
@@ -146,12 +147,17 @@ To deliberately start over, remove the resume file for that target. Following a 
 
 ## Customisation
 
-Use a custom export directory or increase the delay between API calls:
+Use a custom export directory, increase the delay between API calls, or tune transient-request retries:
 
 ```bash
 EXPORT_DIR=/path/to/lemmy_export REQUEST_DELAY=1 \
   ./lemmy-migrator.sh import --target https://new-instance.example --token 'eyJ...'
+
+MAX_RETRIES=5 RETRY_BASE_DELAY=2 \
+  ./lemmy-migrator.sh import --target https://new-instance.example --token 'eyJ...'
 ```
+
+`MAX_RETRIES` is the number of retries after the initial request (default: `3`). `RETRY_BASE_DELAY` controls the initial exponential-backoff delay in seconds (default: `1`). A numeric `Retry-After` header takes precedence for HTTP 429 responses.
 
 ## Known Limitations
 
