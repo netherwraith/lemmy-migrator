@@ -25,7 +25,7 @@ ASSUME_YES=0
 API_VERSION=""
 API_BASE=""
 API_TOKEN=""
-RESUME_FILE=""
+RESUME_FILE="${EXPORT_DIR}/.imported_communities"
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -181,10 +181,28 @@ community_handle() {
     printf '!%s@%s' "$name" "$host"
 }
 
-resume_file_for() {
-    local target="$1" target_key
-    target_key=$(jq -rn --arg target "$target" '$target | @uri')
-    printf '%s/.imported_communities/%s' "$EXPORT_DIR" "$target_key"
+resume_key() {
+    printf '%s\t%s' "$1" "$2"
+}
+
+prepare_resume_state() {
+    local target="$1" line tmp
+    mkdir -p "$EXPORT_DIR"
+    RESUME_FILE="${EXPORT_DIR}/.imported_communities"
+    [[ -f "$RESUME_FILE" ]] || { touch "$RESUME_FILE"; return; }
+    grep -qv $'\t' "$RESUME_FILE" || return
+
+    tmp=$(mktemp "${EXPORT_DIR}/.imported_communities.XXXXXX")
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" ]] || continue
+        if [[ "$line" == *$'\t'* ]]; then
+            printf '%s\n' "$line"
+        else
+            resume_key "$target" "$line"
+            printf '\n'
+        fi
+    done <"$RESUME_FILE" >"$tmp"
+    mv "$tmp" "$RESUME_FILE"
 }
 
 require_option_value() {
@@ -322,7 +340,7 @@ do_import() {
     echo "=== Lemmy subscription import ==="
     echo ""
     login "$target" "$username" "$password" "$token"
-    RESUME_FILE=$(resume_file_for "$target")
+    RESUME_FILE="${EXPORT_DIR}/.imported_communities"
     local total
     total=$(jq '.communities | length' "$file")
     echo ""
@@ -334,14 +352,13 @@ do_import() {
         [[ "$answer" =~ ^[Yy]$ ]] || { echo "Import cancelled."; return; }
     fi
 
-    mkdir -p "$(dirname "$RESUME_FILE")"
-    touch "$RESUME_FILE"
+    [[ "$DRY_RUN" -eq 1 ]] || prepare_resume_state "$target"
     local index=0 imported=0 skipped=0 failed=0 item ap_id handle payload
     while IFS= read -r item; do
         ((index++))
         ap_id=$(jq -r '.ap_id' <<<"$item")
         handle=$(community_handle "$item") || { echo "[${index}/${total}] ✗ Invalid entry"; ((failed++)); continue; }
-        if grep -qxF "$ap_id" "$RESUME_FILE"; then
+        if [[ -f "$RESUME_FILE" ]] && grep -qxF "$(resume_key "$target" "$ap_id")" "$RESUME_FILE"; then
             echo "[${index}/${total}] ↩ Skipped (already imported): ${handle}"
             ((skipped++)); continue
         fi
@@ -358,7 +375,8 @@ do_import() {
         api_request POST "${API_BASE}/community/follow" "$payload"
         if [[ "$API_HTTP_CODE" -ge 200 && "$API_HTTP_CODE" -le 299 ]]; then
             echo "✓ subscribed"
-            printf '%s\n' "$ap_id" >>"$RESUME_FILE"
+            resume_key "$target" "$ap_id" >>"$RESUME_FILE"
+            printf '\n' >>"$RESUME_FILE"
             ((imported++))
         else
             echo "✗ HTTP ${API_HTTP_CODE}: $(jq -r '.error // .message // "unknown error"' <<<"$API_RESPONSE" 2>/dev/null)"

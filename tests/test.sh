@@ -24,10 +24,30 @@ run_test() {
 
 test_resume_state_is_target_scoped() {
     EXPORT_DIR="${TEST_TMP}/export"
-    local first second
-    first=$(resume_file_for 'https://one.example')
-    second=$(resume_file_for 'https://two.example')
-    [[ "$first" != "$second" && "$first" == "${EXPORT_DIR}/.imported_communities/"* ]]
+    [[ "$(resume_key 'https://one.example' 'https://remote.example/c/test')" != \
+       "$(resume_key 'https://two.example' 'https://remote.example/c/test')" ]]
+}
+
+test_legacy_resume_state_is_migrated() {
+    EXPORT_DIR="${TEST_TMP}/legacy"
+    mkdir -p "$EXPORT_DIR"
+    printf '%s\n' 'https://remote.example/c/test' >"${EXPORT_DIR}/.imported_communities"
+    prepare_resume_state 'https://target.example'
+    grep -qxF "$(resume_key 'https://target.example' 'https://remote.example/c/test')" "$RESUME_FILE"
+}
+
+test_dry_run_does_not_create_resume_state() {
+    local export_dir="${TEST_TMP}/dry-run"
+    mkdir -p "$export_dir"
+    printf '%s\n' '{"format":"lemmy-migrator","format_version":1,"communities":[{"name":"test","ap_id":"https://remote.example/c/test"}]}' >"${export_dir}/communities.json"
+    (
+        EXPORT_DIR="$export_dir"
+        DRY_RUN=1
+        login() { API_VERSION=4; API_BASE='https://target.example/api/v4'; }
+        resolve_community() { RESOLVED_ID=42; }
+        do_import 'https://target.example' '' '' 'token' >/dev/null
+    )
+    [[ ! -e "${export_dir}/.imported_communities" ]]
 }
 
 test_incomplete_v4_page_is_rejected() {
@@ -119,6 +139,8 @@ test_invalid_retry_configuration_is_rejected() {
 }
 
 run_test 'resume state is scoped to the target' test_resume_state_is_target_scoped
+run_test 'legacy resume state is migrated to the current target' test_legacy_resume_state_is_migrated
+run_test 'dry runs do not create resume state' test_dry_run_does_not_create_resume_state
 run_test 'incomplete API v4 pages are rejected' test_incomplete_v4_page_is_rejected
 run_test 'repeated API v4 cursors are rejected' test_repeated_v4_cursor_is_rejected
 run_test 'HTTP 429 responses are retried' test_rate_limit_is_retried

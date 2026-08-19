@@ -137,7 +137,7 @@ Token variants are available as `--source-token` and `--target-token`; usernames
 
 ## Resume After Interruption
 
-Every successfully subscribed community is tracked in a target-specific file below `lemmy_export/.imported_communities/`. If the import is interrupted, simply re-run the same command against the same target. Already imported communities are automatically skipped, while an import to a different target starts with its own state.
+Every successfully subscribed community is tracked with its target instance in `lemmy_export/.imported_communities`. If the import is interrupted, simply re-run the same command against the same target. Already imported communities are automatically skipped, while an import to a different target starts with its own state. Dry runs never create or modify this file.
 
 ```text
 [1/42] Resolving !technology@lemmy.world ... ✓ subscribed
@@ -145,7 +145,7 @@ Every successfully subscribed community is tracked in a target-specific file bel
 [3/42] Resolving !example@offline.example ... ✗ not found
 ```
 
-To deliberately start over, remove the resume file for that target. Following a community more than once does not create duplicate subscriptions, but the additional requests may trigger rate limits. Resume files from versions before v0.1 are intentionally ignored because they were not associated with a target instance.
+To deliberately start over, remove the target's lines from the resume file (or remove the whole file). Following a community more than once does not create duplicate subscriptions, but the additional requests may trigger rate limits. On first use, an older unscoped resume file is automatically associated with the current target.
 
 ## Customisation
 
